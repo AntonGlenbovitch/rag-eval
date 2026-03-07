@@ -1,3 +1,4 @@
+from src.models.model import Model
 from src.models.evaluation import (
     Dataset,
     EvaluationRun,
@@ -8,6 +9,7 @@ from src.models.evaluation import (
 )
 
 __all__ = [
+    "Model",
     "Dataset",
     "QAPair",
     "KnowledgeChunk",
