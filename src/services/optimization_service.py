@@ -1,16 +1,29 @@
 from __future__ import annotations
 
 import itertools
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from statistics import mean
-from typing import Any, Callable, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.evaluation import EvaluationRun, PipelineConfig, PipelineExperiment
+from src.services.embedding_service import EmbeddingService
+
+if TYPE_CHECKING:
+    from anthropic import AsyncAnthropic
+
+
+@dataclass(slots=True)
+class FailureCluster:
+    label: str
+    size: int
+    queries: list[str]
+    run_ids: list[uuid.UUID]
 
 
 @dataclass(slots=True)
@@ -21,6 +34,7 @@ class EvaluationRunAnalysis:
     average_score: float
     best_run_id: uuid.UUID | None
     best_score: float | None
+    failure_clusters: list[FailureCluster]
 
 
 @dataclass(slots=True)
@@ -37,9 +51,15 @@ class OptimizationService:
         db_session: AsyncSession,
         *,
         enqueue_evaluation_run: Callable[[str], Any] | None = None,
+        embedding_service: EmbeddingService | None = None,
+        anthropic_client: "AsyncAnthropic | None" = None,
+        anthropic_model: str = "claude-3-5-sonnet-latest",
     ) -> None:
         self._db_session = db_session
         self._enqueue_evaluation_run = enqueue_evaluation_run
+        self._embedding_service = embedding_service
+        self._anthropic_client = anthropic_client
+        self._anthropic_model = anthropic_model
 
     @staticmethod
     def _extract_score(run: EvaluationRun) -> float | None:
@@ -51,6 +71,131 @@ class OptimizationService:
             return float(raw_score)
 
         return None
+
+    @staticmethod
+    def _extract_failed_query(run: EvaluationRun) -> str | None:
+        if not run.metrics:
+            return None
+
+        raw_query = run.metrics.get("question") or run.metrics.get("query")
+        if isinstance(raw_query, str):
+            query = raw_query.strip()
+            if query:
+                return query
+
+        return None
+
+    @staticmethod
+    def _distance_sq(vec_a: Sequence[float], vec_b: Sequence[float]) -> float:
+        return sum((a - b) ** 2 for a, b in zip(vec_a, vec_b, strict=True))
+
+    @staticmethod
+    def _mean_vector(vectors: Sequence[Sequence[float]]) -> list[float]:
+        if not vectors:
+            return []
+
+        dimensions = len(vectors[0])
+        totals = [0.0] * dimensions
+        for vector in vectors:
+            for index, value in enumerate(vector):
+                totals[index] += value
+
+        return [value / len(vectors) for value in totals]
+
+    @classmethod
+    def _kmeans_cluster(cls, embeddings: Sequence[Sequence[float]], k: int, max_iterations: int = 20) -> list[int]:
+        if not embeddings:
+            return []
+
+        centroids = [list(vector) for vector in embeddings[:k]]
+        labels = [0] * len(embeddings)
+
+        for _ in range(max_iterations):
+            changed = False
+
+            for index, vector in enumerate(embeddings):
+                closest_index = min(range(k), key=lambda c: cls._distance_sq(vector, centroids[c]))
+                if labels[index] != closest_index:
+                    labels[index] = closest_index
+                    changed = True
+
+            grouped: list[list[Sequence[float]]] = [[] for _ in range(k)]
+            for label, vector in zip(labels, embeddings, strict=True):
+                grouped[label].append(vector)
+
+            for centroid_index in range(k):
+                if grouped[centroid_index]:
+                    centroids[centroid_index] = cls._mean_vector(grouped[centroid_index])
+
+            if not changed:
+                break
+
+        return labels
+
+    async def _label_failure_cluster(self, queries: Sequence[str], cluster_index: int) -> str:
+        if self._anthropic_client is None:
+            sample = "; ".join(queries[:2])
+            return f"Cluster {cluster_index + 1}: {sample}" if sample else f"Cluster {cluster_index + 1}"
+
+        prompt = (
+            "You are labeling clusters of failed RAG queries.\n"
+            "Given the queries, produce a concise label (3-8 words) for the shared failure theme.\n"
+            "Return JSON only with schema: {\"label\": string}.\n\n"
+            "Queries:\n"
+            + "\n".join(f"- {query}" for query in queries[:12])
+        )
+
+        response = await self._anthropic_client.messages.create(
+            model=self._anthropic_model,
+            max_tokens=80,
+            temperature=0.0,
+            system="Respond with strict JSON only.",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text_blocks = [block.text for block in response.content if hasattr(block, "text")]
+        payload = json.loads("\n".join(text_blocks).strip())
+        label = payload.get("label")
+        if isinstance(label, str) and label.strip():
+            return label.strip()
+        return f"Cluster {cluster_index + 1}"
+
+    async def _build_failure_clusters(self, failed_runs: Sequence[EvaluationRun]) -> list[FailureCluster]:
+        if self._embedding_service is None:
+            return []
+
+        query_rows = [
+            (run.id, query)
+            for run in failed_runs
+            if (query := self._extract_failed_query(run)) is not None
+        ]
+        if len(query_rows) < 2:
+            return []
+
+        queries = [query for _, query in query_rows]
+        embeddings = self._embedding_service.embed_batch(queries)
+
+        k = min(5, max(2, round(len(queries) ** 0.5)))
+        labels = self._kmeans_cluster(embeddings, k=k)
+
+        grouped: dict[int, list[tuple[uuid.UUID, str]]] = {}
+        for label, row in zip(labels, query_rows, strict=True):
+            grouped.setdefault(label, []).append(row)
+
+        clusters: list[FailureCluster] = []
+        for cluster_index in sorted(grouped.keys()):
+            rows = grouped[cluster_index]
+            cluster_queries = [query for _, query in rows]
+            cluster_label = await self._label_failure_cluster(cluster_queries, cluster_index)
+            clusters.append(
+                FailureCluster(
+                    label=cluster_label,
+                    size=len(rows),
+                    queries=cluster_queries,
+                    run_ids=[run_id for run_id, _ in rows],
+                )
+            )
+
+        return sorted(clusters, key=lambda item: item.size, reverse=True)
 
     async def analyze_evaluation_runs(
         self,
@@ -78,6 +223,8 @@ class OptimizationService:
         if scored_runs:
             best_run_id, best_score = max(scored_runs, key=lambda item: item[1])
 
+        failure_clusters = await self._build_failure_clusters(failed_runs)
+
         return EvaluationRunAnalysis(
             total_runs=len(runs),
             completed_runs=len(completed_runs),
@@ -85,6 +232,7 @@ class OptimizationService:
             average_score=average_score,
             best_run_id=best_run_id,
             best_score=best_score,
+            failure_clusters=failure_clusters,
         )
 
     @staticmethod

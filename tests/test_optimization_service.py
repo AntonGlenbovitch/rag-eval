@@ -1,3 +1,4 @@
+import json
 import unittest
 import uuid
 
@@ -41,6 +42,36 @@ class FakeAsyncSession:
         self.commit_called += 1
 
 
+class FakeEmbeddingService:
+    def embed_batch(self, texts):
+        mapping = {
+            "timeout on legal doc query": [1.0, 0.0],
+            "timeout while retrieving policy": [1.1, 0.0],
+            "irrelevant response for pricing": [0.0, 1.0],
+            "hallucinated citation answer": [0.0, 1.1],
+        }
+        return [mapping[text] for text in texts]
+
+
+class _FakeClaudeMessages:
+    async def create(self, **kwargs):
+        user_content = kwargs["messages"][0]["content"]
+        label = "Retrieval Timeout Errors" if "timeout" in user_content else "Relevance/Hallucination Issues"
+
+        class _Block:
+            text = json.dumps({"label": label})
+
+        class _Response:
+            content = [_Block()]
+
+        return _Response()
+
+
+class FakeAnthropicClient:
+    def __init__(self):
+        self.messages = _FakeClaudeMessages()
+
+
 class OptimizationServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_analyze_evaluation_runs_summarizes_scores(self):
         dataset_id = uuid.uuid4()
@@ -77,6 +108,55 @@ class OptimizationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(summary.average_score, 0.7)
         self.assertEqual(summary.best_run_id, run1.id)
         self.assertEqual(summary.best_score, 0.8)
+        self.assertEqual(summary.failure_clusters, [])
+
+    async def test_analyze_evaluation_runs_builds_failure_clusters(self):
+        dataset_id = uuid.uuid4()
+        pipeline_config_id = uuid.uuid4()
+        runs = [
+            EvaluationRun(
+                id=uuid.uuid4(),
+                dataset_id=dataset_id,
+                pipeline_config_id=pipeline_config_id,
+                status="failed",
+                metrics={"question": "timeout on legal doc query"},
+            ),
+            EvaluationRun(
+                id=uuid.uuid4(),
+                dataset_id=dataset_id,
+                pipeline_config_id=pipeline_config_id,
+                status="failed",
+                metrics={"question": "timeout while retrieving policy"},
+            ),
+            EvaluationRun(
+                id=uuid.uuid4(),
+                dataset_id=dataset_id,
+                pipeline_config_id=pipeline_config_id,
+                status="failed",
+                metrics={"question": "irrelevant response for pricing"},
+            ),
+            EvaluationRun(
+                id=uuid.uuid4(),
+                dataset_id=dataset_id,
+                pipeline_config_id=pipeline_config_id,
+                status="failed",
+                metrics={"question": "hallucinated citation answer"},
+            ),
+        ]
+
+        service = OptimizationService(
+            db_session=FakeAsyncSession(runs),
+            embedding_service=FakeEmbeddingService(),
+            anthropic_client=FakeAnthropicClient(),
+        )
+
+        summary = await service.analyze_evaluation_runs(dataset_id=dataset_id, pipeline_config_id=pipeline_config_id)
+
+        self.assertEqual(len(summary.failure_clusters), 2)
+        labels = {cluster.label for cluster in summary.failure_clusters}
+        self.assertIn("Retrieval Timeout Errors", labels)
+        self.assertIn("Relevance/Hallucination Issues", labels)
+        self.assertEqual(sum(cluster.size for cluster in summary.failure_clusters), 4)
 
     def test_generate_pipeline_candidates_cartesian_product(self):
         candidates = OptimizationService.generate_pipeline_candidates(
