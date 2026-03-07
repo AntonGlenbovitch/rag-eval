@@ -5,6 +5,7 @@ from src.services.evaluation_service import EvaluationResult, EvaluationService
 from src.services.retrieval_service import RetrievalResult, RetrievalService
 from src.services.optimization_service import EvaluationRunAnalysis, FailureCluster, OptimizationService, PipelineComparison
 from src.services.report_generator import ReportGenerator
+from src.services.model_benchmark_service import ModelBenchmarkResult, ModelBenchmarkService
 
 __all__ = [
     "ModelService",
@@ -20,4 +21,6 @@ __all__ = [
     "FailureCluster",
     "PipelineComparison",
     "ReportGenerator",
+    "ModelBenchmarkService",
+    "ModelBenchmarkResult",
 ]
