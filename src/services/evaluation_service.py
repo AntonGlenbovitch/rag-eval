@@ -15,6 +15,7 @@ from src.services.retrieval_service import RetrievalService
 
 @dataclass(slots=True)
 class EvaluationResult:
+    question: str
     query_embedding: list[float]
     retrieved_chunk_ids: list[uuid.UUID]
     retrieval_metrics: dict[str, float]
@@ -23,6 +24,7 @@ class EvaluationResult:
 
     def to_dict(self) -> dict:
         return {
+            "question": self.question,
             "query_embedding": self.query_embedding,
             "retrieved_chunk_ids": [str(chunk_id) for chunk_id in self.retrieved_chunk_ids],
             "retrieval_metrics": self.retrieval_metrics,
@@ -96,6 +98,7 @@ class EvaluationService:
 
         score = self._compute_score(retrieval_metrics, judge_scores)
         evaluation_result = EvaluationResult(
+            question=question,
             query_embedding=query_embedding,
             retrieved_chunk_ids=retrieved_chunk_ids,
             retrieval_metrics=retrieval_metrics,
