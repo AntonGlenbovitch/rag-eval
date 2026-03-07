@@ -1,3 +1,17 @@
-from src.models.evaluation import EvaluationRun
+from src.models.evaluation import (
+    Dataset,
+    EvaluationRun,
+    KnowledgeChunk,
+    PipelineConfig,
+    PipelineExperiment,
+    QAPair,
+)
 
-__all__ = ["EvaluationRun"]
+__all__ = [
+    "Dataset",
+    "QAPair",
+    "KnowledgeChunk",
+    "PipelineConfig",
+    "EvaluationRun",
+    "PipelineExperiment",
+]
