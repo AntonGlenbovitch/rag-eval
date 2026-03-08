@@ -1,5 +1,6 @@
 from src.services.model_service import ModelService
 from src.services.model_ranking_service import ModelRankingService, RankedModel
+from src.services.model_selector_service import ModelSelectorService
 from src.services.claude_judge_service import ClaudeJudgeEvaluation, ClaudeJudgeService
 from src.services.embedding_service import EmbeddingService
 from src.services.evaluation_service import EvaluationResult, EvaluationService
@@ -12,6 +13,7 @@ __all__ = [
     "ModelService",
     "ModelRankingService",
     "RankedModel",
+    "ModelSelectorService",
     "EmbeddingService",
     "RetrievalService",
     "EvaluationService",
