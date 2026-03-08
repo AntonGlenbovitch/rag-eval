@@ -1,9 +1,9 @@
-import asyncio
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+import asyncio
+from typing import Any, Callable
 
-from celery import Task
+from celery import Task  # type: ignore[import-untyped]
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -63,7 +63,7 @@ async def _run_evaluation_async(
     *,
     evaluation_run_id: uuid.UUID,
     session_factory: async_sessionmaker[AsyncSession] = AsyncSessionLocal,
-    service_factory: Any = _build_evaluation_service,
+    service_factory: Callable[[AsyncSession], EvaluationService] = _build_evaluation_service,
 ) -> dict[str, Any]:
     async with session_factory() as db_session:
         run = await db_session.get(EvaluationRun, evaluation_run_id)
@@ -107,4 +107,10 @@ def ping() -> str:
 
 @celery_app.task(name="tasks.run_evaluation", bind=True)
 def run_evaluation(self: Task, evaluation_run_id: str) -> dict[str, Any]:
-    return asyncio.run(_run_evaluation_async(evaluation_run_id=uuid.UUID(evaluation_run_id)))
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(_run_evaluation_async(evaluation_run_id=uuid.UUID(evaluation_run_id)))
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
