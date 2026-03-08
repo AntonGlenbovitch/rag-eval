@@ -8,8 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db
 from src.models.evaluation import Dataset, EvaluationRun, KnowledgeChunk, PipelineConfig, PipelineExperiment, QAPair
+from src.models.model import Model
+from src.models.model_ranking import ModelRanking
 from src.schemas.health import HealthResponse
+from src.services.claude_judge_service import ClaudeJudgeService
 from src.services.embedding_service import EmbeddingService
+from src.services.evaluation_service import EvaluationService
+from src.services.model_benchmark_service import ModelBenchmarkService
+from src.services.model_ranking_service import ModelRankingService
+from src.services.retrieval_service import RetrievalService
 from src.services.optimization_service import OptimizationService
 from src.tasks.jobs import run_evaluation
 
@@ -103,6 +110,26 @@ class PipelineComparisonResponse(BaseModel):
     metrics: dict[str, float]
 
 
+class BenchmarkRequest(BaseModel):
+    model_ids: list[uuid.UUID] | None = None
+
+
+class ModelResponse(BaseModel):
+    id: uuid.UUID
+    name: str
+    provider: str
+    context_window: int
+    cost_per_1k_tokens: float
+
+
+class ModelRankingResponse(BaseModel):
+    model_id: uuid.UUID
+    model_name: str
+    provider: str
+    weighted_score: float
+    rank: int
+
+
 # This lightweight dependency makes EmbeddingService overridable in tests
 
 def get_embedding_service() -> EmbeddingService:
@@ -115,6 +142,31 @@ def get_embedding_service() -> EmbeddingService:
         openai_client=OpenAI(api_key=settings.openai_api_key),
         redis_client=Redis.from_url(settings.redis_url),
         model=settings.openai_embedding_model,
+    )
+
+
+def get_evaluation_service(db: AsyncSession) -> EvaluationService:
+    from anthropic import AsyncAnthropic
+    from openai import OpenAI
+    from redis import Redis
+
+    from src.core.config import settings
+
+    embedding_service = EmbeddingService(
+        openai_client=OpenAI(api_key=settings.openai_api_key),
+        redis_client=Redis.from_url(settings.redis_url),
+        model=settings.openai_embedding_model,
+    )
+    retrieval_service = RetrievalService(db_session=db)
+    judge_service = ClaudeJudgeService(
+        anthropic_client=AsyncAnthropic(api_key=settings.anthropic_api_key),
+        model=settings.anthropic_model,
+    )
+    return EvaluationService(
+        db_session=db,
+        embedding_service=embedding_service,
+        retrieval_service=retrieval_service,
+        judge_service=judge_service,
     )
 
 
@@ -339,4 +391,112 @@ async def failure_clusters(
             run_ids=cluster.run_ids,
         )
         for cluster in analysis.failure_clusters
+    ]
+
+
+@router.post("/api/v1/benchmark/{dataset_id}")
+async def run_model_benchmark(
+    dataset_id: uuid.UUID,
+    payload: BenchmarkRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    dataset = await db.get(Dataset, dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    selected_models = payload.model_ids
+    if selected_models is None:
+        model_result = await db.execute(select(Model.id))
+        selected_models = [model_id for model_id in model_result.scalars().all()]
+
+    if not selected_models:
+        raise HTTPException(status_code=400, detail="No models available for benchmarking")
+
+    benchmark_service = ModelBenchmarkService(db_session=db, evaluation_service=get_evaluation_service(db))
+    benchmark_result = await benchmark_service.benchmark_dataset(dataset_id=dataset_id, model_ids=selected_models)
+
+    rankings = await ModelRankingService(db_session=db).rank_models(dataset_id)
+    return {
+        **benchmark_result,
+        "rankings": [
+            {
+                "model_id": str(ranking.model_id),
+                "model_name": ranking.model_name,
+                "provider": ranking.provider,
+                "weighted_score": ranking.weighted_score,
+                "rank": ranking.rank,
+            }
+            for ranking in rankings
+        ],
+    }
+
+
+@router.get("/api/v1/benchmark/{dataset_id}")
+async def get_model_benchmark(dataset_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    dataset = await db.get(Dataset, dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    ranking_rows = await db.execute(
+        select(ModelRanking, Model)
+        .join(Model, Model.id == ModelRanking.model_id)
+        .where(ModelRanking.dataset_id == dataset_id)
+        .order_by(ModelRanking.rank.asc())
+    )
+    rows = ranking_rows.all()
+
+    rankings = [
+        {
+            "model_id": str(ranking.model_id),
+            "model_name": model.name,
+            "provider": model.provider,
+            "weighted_score": ranking.weighted_score,
+            "rank": ranking.rank,
+        }
+        for ranking, model in rows
+    ]
+    average_score = sum(item["weighted_score"] for item in rankings) / len(rankings) if rankings else 0.0
+
+    return {
+        "dataset_id": str(dataset_id),
+        "average_score": average_score,
+        "rankings": rankings,
+    }
+
+
+@router.get("/api/v1/models", response_model=list[ModelResponse])
+async def list_available_models(
+    provider: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(Model)
+    if provider:
+        query = query.where(Model.provider == provider)
+
+    result = await db.execute(query.order_by(Model.created_at.desc()))
+    models = result.scalars().all()
+    return [
+        ModelResponse(
+            id=model.id,
+            name=model.name,
+            provider=model.provider,
+            context_window=model.context_window,
+            cost_per_1k_tokens=model.cost_per_1k_tokens,
+        )
+        for model in models
+    ]
+
+
+@router.get("/api/v1/models/ranking/{dataset_id}", response_model=list[ModelRankingResponse])
+async def get_model_ranking(dataset_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    rankings = await ModelRankingService(db_session=db).rank_models(dataset_id)
+    return [
+        ModelRankingResponse(
+            model_id=ranking.model_id,
+            model_name=ranking.model_name,
+            provider=ranking.provider,
+            weighted_score=ranking.weighted_score,
+            rank=ranking.rank,
+        )
+        for ranking in rankings
     ]
