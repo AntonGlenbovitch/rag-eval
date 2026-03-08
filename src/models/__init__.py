@@ -1,5 +1,3 @@
-from src.models.model import Model, ModelBenchmark
-from src.models.model_ranking import ModelRanking
 from src.models.evaluation import (
     Dataset,
     EvaluationRun,
@@ -8,6 +6,9 @@ from src.models.evaluation import (
     PipelineExperiment,
     QAPair,
 )
+from src.models.model import Model, ModelBenchmark
+from src.models.model_ranking import ModelRanking
+from src.models.routing_decision import RoutingDecision
 
 __all__ = [
     "Model",
@@ -19,4 +20,5 @@ __all__ = [
     "PipelineConfig",
     "EvaluationRun",
     "PipelineExperiment",
+    "RoutingDecision",
 ]
