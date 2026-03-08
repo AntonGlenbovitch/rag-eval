@@ -1,4 +1,5 @@
 import uuid
+from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db
 from src.models.evaluation import Dataset, EvaluationRun, KnowledgeChunk, PipelineConfig, PipelineExperiment, QAPair
+from src.models.routing_decision import RoutingDecision
 from src.models.model import Model
 from src.models.model_ranking import ModelRanking
 from src.schemas.health import HealthResponse
@@ -18,6 +20,8 @@ from src.services.model_benchmark_service import ModelBenchmarkService
 from src.services.model_ranking_service import ModelRankingService
 from src.services.retrieval_service import RetrievalService
 from src.services.optimization_service import OptimizationService
+from src.services.query_analyzer import QueryAnalyzer
+from src.services.routing_policy_service import RoutingPolicyService
 from src.tasks.jobs import run_evaluation
 
 router = APIRouter()
@@ -136,6 +140,19 @@ class ModelRankingResponse(BaseModel):
     weighted_score: float
     rank: int
 
+
+
+
+class RouteRequest(BaseModel):
+    dataset_id: uuid.UUID
+    query: str
+
+
+class RouteResponse(BaseModel):
+    selected_model: str
+    selected_pipeline: uuid.UUID
+    reason: str
+    score: float
 
 # This lightweight dependency makes EmbeddingService overridable in tests
 
@@ -507,6 +524,50 @@ async def get_model_ranking(dataset_id: uuid.UUID, db: AsyncSession = Depends(ge
         )
         for ranking in rankings
     ]
+
+
+@router.post("/api/v1/route", response_model=RouteResponse)
+async def route_query(payload: RouteRequest, db: AsyncSession = Depends(get_db)):
+    dataset = await db.get(Dataset, payload.dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    analyzer = QueryAnalyzer()
+    features = analyzer.analyze_query(payload.query)
+    routing_service = RoutingPolicyService(db_session=db)
+    selected = await routing_service.select_pipeline(dataset_id=payload.dataset_id, features=features)
+
+    model = await db.get(Model, selected.model_id)
+    model_name = model.name if model else str(selected.model_id)
+
+    db.add(
+        RoutingDecision(
+            dataset_id=payload.dataset_id,
+            query=payload.query,
+            query_features=asdict(features),
+            model_id=selected.model_id,
+            pipeline_config_id=selected.pipeline_config_id,
+            score=selected.score,
+        )
+    )
+    await db.commit()
+
+    return RouteResponse(
+        selected_model=model_name,
+        selected_pipeline=selected.pipeline_config_id,
+        reason=f"Selected {model_name} due to strong evaluation score for {features.query_type} queries.",
+        score=selected.score,
+    )
+
+
+@router.get("/api/v1/routing/stats/{dataset_id}")
+async def get_routing_stats(dataset_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    dataset = await db.get(Dataset, dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    service = RoutingPolicyService(db_session=db)
+    return await service.get_routing_stats(dataset_id)
 
 
 __all__ = ["router", "datasets", "embeddings", "evaluate", "analyze", "benchmark"]

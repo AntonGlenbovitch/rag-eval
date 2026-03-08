@@ -24,6 +24,8 @@ class ApiRoutesTests(unittest.TestCase):
             "/api/v1/benchmark/{dataset_id}",
             "/api/v1/models",
             "/api/v1/models/ranking/{dataset_id}",
+            "/api/v1/route",
+            "/api/v1/routing/stats/{dataset_id}",
         }
 
         self.assertTrue(expected_paths.issubset(route_paths))
