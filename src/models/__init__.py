@@ -1,4 +1,5 @@
 from src.models.model import Model
+from src.models.model_ranking import ModelRanking
 from src.models.evaluation import (
     Dataset,
     EvaluationRun,
@@ -10,6 +11,7 @@ from src.models.evaluation import (
 
 __all__ = [
     "Model",
+    "ModelRanking",
     "Dataset",
     "QAPair",
     "KnowledgeChunk",
