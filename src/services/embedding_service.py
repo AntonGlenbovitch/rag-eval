@@ -36,7 +36,14 @@ class EmbeddingService:
                 misses_by_text.setdefault(text, []).append(index)
                 continue
 
-            decoded = cached_value.decode("utf-8") if isinstance(cached_value, bytes) else cached_value
+            if isinstance(cached_value, bytes):
+                decoded = cached_value.decode("utf-8")
+            elif isinstance(cached_value, str):
+                decoded = cached_value
+            else:
+                misses_by_text.setdefault(text, []).append(index)
+                continue
+
             ordered_embeddings[index] = json.loads(decoded)
 
         missing_texts = list(misses_by_text.keys())

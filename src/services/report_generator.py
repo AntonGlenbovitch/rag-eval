@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
@@ -111,7 +112,7 @@ class ReportGenerator:
         return {name: sums[name] / counts[name] for name in sorted(sums.keys()) if counts[name] > 0}
 
     @staticmethod
-    def _metrics_table(metrics: dict[str, float | None]) -> str:
+    def _metrics_table(metrics: Mapping[str, float | None]) -> str:
         if not metrics:
             return "No metrics available."
 
@@ -143,7 +144,7 @@ class ReportGenerator:
 
         return "\n".join(lines)
 
-    def _recommendation_lines(self, metrics: dict[str, float | None]) -> list[str]:
+    def _recommendation_lines(self, metrics: Mapping[str, float | None]) -> list[str]:
         recommendations = self._collect_recommendations(metrics)
         if not recommendations:
             return ["- No immediate issues detected. Continue monitoring trends across runs."]
@@ -165,7 +166,7 @@ class ReportGenerator:
 
         return recommendations
 
-    def _collect_recommendations(self, metrics: dict[str, float | None]) -> list[str]:
+    def _collect_recommendations(self, metrics: Mapping[str, float | None]) -> list[str]:
         recommendations = []
         for metric_name, metric_value in metrics.items():
             if not isinstance(metric_value, int | float):

@@ -22,6 +22,13 @@ from src.tasks.jobs import run_evaluation
 
 router = APIRouter()
 
+# Named routers kept for compatibility with modular API registration patterns.
+datasets = router
+embeddings = router
+evaluate = router
+analyze = router
+benchmark = router
+
 
 class DatasetCreateRequest(BaseModel):
     name: str
@@ -500,3 +507,6 @@ async def get_model_ranking(dataset_id: uuid.UUID, db: AsyncSession = Depends(ge
         )
         for ranking in rankings
     ]
+
+
+__all__ = ["router", "datasets", "embeddings", "evaluate", "analyze", "benchmark"]
