@@ -14,6 +14,13 @@ Instead of evaluating prompts/pipelines ad hoc, `ragprobe` gives teams a repeata
 
 Primary audience: backend/ML engineers building and tuning RAG systems.
 
+## Documentation Map
+
+- `docs/README.md` — docs index.
+- `docs/run-environment.md` — required services, env vars, and deployment/runtime topology.
+- `docs/step-by-step-execution.md` — exact startup + execution sequence from API request to Celery completion.
+- `docs/runtime-flowchart.md` — Mermaid flowchart for request and background-job processing.
+
 # Features
 
 Implemented features in the current repository:
@@ -77,6 +84,34 @@ Optional:
 
 1. Clone and enter the repository.
 2. Create a `.env` file in project root (see [Configuration](#configuration)).
+
+Example `.env` for local Docker usage:
+
+```dotenv
+APP_NAME=ragprobe
+APP_ENV=development
+APP_HOST=0.0.0.0
+APP_PORT=8000
+
+POSTGRES_DB=ragprobe
+POSTGRES_USER=ragprobe
+POSTGRES_PASSWORD=ragprobe
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+DATABASE_URL=postgresql+asyncpg://ragprobe:ragprobe@postgres:5432/ragprobe
+
+REDIS_HOST=redis
+REDIS_PORT=6379
+REDIS_URL=redis://redis:6379/0
+CELERY_BROKER_URL=redis://redis:6379/0
+CELERY_RESULT_BACKEND=redis://redis:6379/1
+
+OPENAI_API_KEY=your_openai_key
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+ANTHROPIC_API_KEY=your_anthropic_key
+ANTHROPIC_MODEL=claude-3-5-sonnet-latest
+```
+
 3. Start all services:
 
 ```bash
@@ -89,6 +124,18 @@ This starts:
 - Postgres (pgvector image)
 - Redis
 
+4. Run migrations in the API container:
+
+```bash
+docker compose exec api alembic upgrade head
+```
+
+5. Verify health:
+
+```bash
+curl http://localhost:8000/health
+```
+
 ## Option B: Local Python environment
 
 1. Create and activate a virtual environment.
@@ -98,7 +145,16 @@ This starts:
 pip install -r requirements.txt
 ```
 
-3. Provide infrastructure services (Postgres + Redis) and `.env` settings.
+3. Provide infrastructure services (Postgres + Redis) and `.env` settings. For local host setup, a working baseline is:
+
+```dotenv
+DATABASE_URL=postgresql+asyncpg://ragprobe:ragprobe@localhost:5432/ragprobe
+REDIS_URL=redis://localhost:6379/0
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/1
+POSTGRES_HOST=localhost
+REDIS_HOST=localhost
+```
 4. Run database migrations:
 
 ```bash
@@ -153,6 +209,11 @@ Notes:
 - Defaults for hostnames (`db`, `redis`) match Docker Compose networking. For non-Docker local runs, use reachable hostnames (for example `localhost`).
 
 # Running the Application
+
+Detailed runtime internals are documented in:
+- `docs/run-environment.md`
+- `docs/step-by-step-execution.md`
+- `docs/runtime-flowchart.md`
 
 ## API
 
